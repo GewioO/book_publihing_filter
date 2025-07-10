@@ -3,4 +3,5 @@ keys.json
 
 # temp
 *.session
+*.session-journal
 /.easyocr

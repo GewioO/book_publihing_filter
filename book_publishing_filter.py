@@ -21,30 +21,8 @@ API_ID   = keys["api_id"]
 API_HASH = keys["api_hash"]
 SESSION  = "books_monitor"
 
-CHANNELS = [
-    "@vivat_publishing",
-    "@ksd_bookclub",
-    "@vydavnytstvo",
-    "@nebobooks",
-    "@molfarpublish",
-    "@rm_publisher",
-    "@librarius_books",
-    "@artbooks_ua",
-    "@starlev",
-    "@ababahalamaha",
-    "@vydavnytstvotak",
-    "@nashaidea",
-    "@fabulabook",
-    "@testing_channel_book",
-    "@publishingvarvar",
-    "@knygolove",
-    "@bohdan_books",
-    "@KM_Books",
-    "@malopus",
-    "@laboratoryua",
-    "@zhupanskogo",
-    "@Book_Chef",
-]
+with open("channels.json", encoding="utf-8") as f:
+    CHANNELS = json.load(f)["channels"]
 
 TARGET_CHAT = "@new_book_filter"               
 BOT_TOKEN   = keys["bot_token"]

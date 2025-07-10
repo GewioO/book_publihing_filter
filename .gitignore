@@ -1,0 +1,6 @@
+# secret config
+keys.json
+
+# temp
+*.session
+/.easyocr

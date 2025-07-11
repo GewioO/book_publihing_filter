@@ -30,7 +30,7 @@ BOT_API     = f"https://api.telegram.org/bot{BOT_TOKEN}"
 OPENAI_API_KEY = keys["openai_api_key"]
 
 BACKFILL_HOURS = 1
-RUN_BACKFILL = True 
+RUN_BACKFILL = False 
 FORWARD_MODE = True 
 KEYWORDS = ("передзамов", "у друці")
 SEEN_ALBUMS: set[int] = set()
@@ -38,6 +38,7 @@ IN_PROGRESS: set[int] = set()
 
 client = TelegramClient(SESSION, API_ID, API_HASH)
 client.add_event_handler(lambda e: None, events.Raw(types=(UpdateShort,)))
+processed_grouped_ids = set()
 
 SYSTEM_PROMPT = (
     # --- Role ---
@@ -105,9 +106,6 @@ async def llm_is_relevant(text: str) -> bool:
     except Exception as e:
         print("‼️ LLM error:", e)
         return False
-
-async def is_relevant(text: str) -> bool:
-    return await llm_is_relevant(text)
 
 # ----- Start Telethon and bot part
 
@@ -259,14 +257,12 @@ async def forward_or_send(msg):
         send_text_via_bot(shorten(msg.raw_text or ""), link)
         await rate_sleep()
 
-async def init_channels():
-    await client.connect()                 
+async def init_channels():                
     for ch in CHANNELS:
         try:
             await client.get_input_entity(ch)
         except Exception as e:
-            print(f"⚠️  Cannot resolve {ch}: {e}")
-    await client.disconnect()              
+            print(f"⚠️  Cannot resolve {ch}: {e}")     
 
 def add_to_seen_albums(grouped_ids):
     if grouped_ids:
@@ -287,7 +283,10 @@ async def new_msg_handler(event):
     
     album = await get_album(msg)  
     caption_text = next((m.raw_text for m in album if m.raw_text), "") or ""
-
+    if msg.grouped_id:
+        if msg.grouped_id in processed_grouped_ids:
+            return  # вже оброблено
+        processed_grouped_ids.add(msg.grouped_id)
     try:
         if caption_text and quick_keyword_pass(caption_text):
             print(f"✅ keyword‑pass {prefix}")
@@ -297,7 +296,7 @@ async def new_msg_handler(event):
 
         if caption_text:
             print(f"LLM‑caption → {prefix}{caption_text[:80]}…")
-            if await is_relevant(caption_text):
+            if await llm_is_relevant(caption_text):
                 print(f"✅ GPT 'yes' for caption {prefix}")
                 await forward_or_send(msg)
                 add_to_seen_albums(grouped_ids)
@@ -326,7 +325,7 @@ async def new_msg_handler(event):
             add_to_seen_albums(grouped_ids)
             return
 
-        if ocr_text and await is_relevant(ocr_text):
+        if ocr_text and await llm_is_relevant(ocr_text):
             print(f"✅ GPT 'yes' from OCR {prefix}")
             await forward_or_send(msg)
             add_to_seen_albums(grouped_ids)
@@ -351,7 +350,7 @@ async def backfill(hours: int = BACKFILL_HOURS):
     for chan in CHANNELS:
         async for msg in client.iter_messages(chan, offset_date=since, reverse=True):
             txt = msg.raw_text or ""
-            if txt and await is_relevant(txt):
+            if txt and await llm_is_relevant(txt):
                 await forward_or_send(msg)
                 total += 1
                 await rate_sleep()

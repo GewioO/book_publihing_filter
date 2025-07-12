@@ -304,14 +304,6 @@ async def backfill(hours: int = config.BACKFILL_HOURS):
 
     print(f"Backfill end, sended {total} messages")
 
-async def periodic_ping(interval_min: int = 20):
-    while True:
-        try:
-            await client.get_me()
-        except Exception as e:
-            print("⚠️ ping error:", e)
-        await asyncio.sleep(interval_min * 60)
-
 # End Telethon and bot part
 
 def main():
@@ -331,7 +323,6 @@ def main():
             await backfill(hours=config.BACKFILL_HOURS)
 
         print("▶️ Listening…")
-        #asyncio.create_task(periodic_ping())
         await client.run_until_disconnected()
 
     while True:

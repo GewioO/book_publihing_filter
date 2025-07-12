@@ -5,3 +5,4 @@ keys.json
 *.session
 *.session-journal
 /.easyocr
+__pycache__

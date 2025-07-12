@@ -49,7 +49,7 @@ async def llm_is_relevant(text: str) -> bool:
         return decision
 
     except Exception as e:
-        print("‼️ LLM error:", e)
+        print("‼️ LLM error:", e)
         return False
 
 # ----- Start Telethon and bot part
@@ -60,6 +60,7 @@ async def rate_sleep(sec: float = 2.0):
 def bot_api(method: str, **params):
     return requests.post(f"{config.BOT_API}/{method}", **params, timeout=60)
 
+## Special for specific publisher
 def fuzzy_keyword(text: str) -> bool:
     low = text.lower()
     patterns = [
@@ -90,6 +91,11 @@ async def get_album(msg):
     siblings.sort(key=lambda m: m.id)
     return siblings
 
+def add_to_seen_albums(grouped_ids):
+    if grouped_ids:
+        IN_PROGRESS.discard(grouped_ids)
+        SEEN_ALBUMS.add(grouped_ids)
+
 # ----- Start OCR part 
 
 async def ocr_photo_to_text(message) -> str:
@@ -99,6 +105,7 @@ async def ocr_photo_to_text(message) -> str:
     lines = reader.readtext(img, detail=0, paragraph=False)
     return "\n".join(lines).strip()
 
+## Special for albums
 async def ocr_first_two(msg) -> str:
     images = []
     if msg.photo or (msg.document and msg.document.mime_type.startswith("image/")):
@@ -209,11 +216,6 @@ async def init_channels():
         except Exception as e:
             print(f"⚠️  Cannot resolve {ch}: {e}")     
 
-def add_to_seen_albums(grouped_ids):
-    if grouped_ids:
-        IN_PROGRESS.discard(grouped_ids)
-        SEEN_ALBUMS.add(grouped_ids)
-
 @client.on(events.NewMessage(chats=config.CHANNELS))
 async def new_msg_handler(event):
     chanal = event.chat.username or event.chat.title or "unknown"
@@ -303,7 +305,6 @@ async def backfill(hours: int = config.BACKFILL_HOURS):
     print(f"Backfill end, sended {total} messages")
 
 async def periodic_ping(interval_min: int = 20):
-    """Раз на interval_min хв викликає get_me() щоб тримати TCP активним."""
     while True:
         try:
             await client.get_me()

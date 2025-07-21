@@ -35,3 +35,4 @@ P.S you can use another open LLMs, but I want to use free Oracle server, you kno
 * python3.11 -m pip install numpy==1.24.4 
 * python3.11 -m pip install opencv-python-headless==4.7.0.72
 * python3.11 -m pip install easyocr==1.7.1
+* python3.11 -m pip install aiohttp pillow

@@ -16,10 +16,10 @@ OPENAI_API_KEY = keys["openai_api_key"]
 OPENAI_MODEL = "gpt-4o-mini"
 
 BACKFILL_HOURS = 1
-RUN_BACKFILL = True 
+RUN_BACKFILL = False 
 FORWARD_MODE = True 
 
-KEYWORDS = ("передзамов", "у друці")
+KEYWORDS = ("передзамов", "у друці", )
 
 SYSTEM_PROMPT = (
     # --- Role ---
@@ -37,7 +37,7 @@ SYSTEM_PROMPT = (
     # --- (YES) ---
     "Treat posts as *YES* if they contain phrases like:\n"
     "  - “Передзамовлення відкрите”, “Старт передзамовлення”, “Уже у передпродажі”;\n"
-    "  - “Передзамовлення триває до кінця дня”, “Останній день передзамовлення”;\n"
+    "  - “Передзамовлення триває до кінця дня”, “Останній день передзамовлення”, “передпродаж”;\n"
     "  - “Новинка вже у продажу / у е‑форматі / в аудіо”; “Вийшла з друку”, “Книга вийшла”, “Новинки <назва місяця>“;\n"
     "  - “Анонс книги <Назва>: уже можна купити / доступна до замовлення”.\n"
     "  - If OCR contains the Ukrainian word “новинки” (new releases)\n\n"

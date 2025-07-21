@@ -10,7 +10,9 @@ from functools import lru_cache
 import asyncio, os
 import openai
 import easyocr, cv2, numpy as np
-import traceback
+import aiohttp
+import tempfile
+from PIL import Image
 import re
 import config
 
@@ -65,13 +67,13 @@ def fuzzy_keyword(text: str) -> bool:
     low = text.lower()
     patterns = [
         r"новинк[аи]",            
-        r"новинк",                
+        r"новинк",
+        r"передпродаж"                
     ]
     return any(re.search(p, low) for p in patterns)
 
 def quick_keyword_pass(text: str) -> bool:
-    low = text.lower()
-    return any(k in low for k in config.KEYWORDS)
+    return any(k in re.sub(r'[^\w\s]', '', text.lower()) for k in config.KEYWORDS)
 
 async def get_album(msg):
     if not msg.grouped_id:
@@ -98,12 +100,30 @@ def add_to_seen_albums(grouped_ids):
 
 # ----- Start OCR part 
 
-async def ocr_photo_to_text(message) -> str:
-    raw = await client.download_media(message, bytes)
-    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+async def ocr_photo_to_text(message_or_url) -> str:
+    if isinstance(message_or_url, str):
+        return await ocr_from_image_url(message_or_url)
+    else:
+        raw = await client.download_media(message_or_url, bytes)
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+        lines = reader.readtext(img, detail=0, paragraph=False)
+        return "\n".join(lines).strip()
+    
+async def ocr_from_image_url(url: str) -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return ""
+                raw = await resp.read()
 
-    lines = reader.readtext(img, detail=0, paragraph=False)
-    return "\n".join(lines).strip()
+        img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+        lines = reader.readtext(img, detail=0, paragraph=False)
+        return "\n".join(lines).strip()
+
+    except Exception as e:
+        print("❌ ocr_from_image_url error:", e)
+        return ""
 
 ## Special for albums
 async def ocr_first_two(msg) -> str:
@@ -136,6 +156,10 @@ async def collect_text(msg) -> str:
                 if sibling.photo or (sibling.document and sibling.document.mime_type.startswith("image/")):
                     parts.append(await ocr_photo_to_text(sibling))
     return "\n".join([p for p in parts if p])
+
+def extract_telegram_image_links(text):
+    pattern = r'https://telegra\.ph/file/\S+\.(?:jpg|jpeg|png|webp)'
+    return re.findall(pattern, text or "")
 
 def send_text_via_bot(text: str, link: str):
     payload = dict(chat_id=config.TARGET_CHAT,
@@ -222,7 +246,9 @@ async def new_msg_handler(event):
     prefix = f"[@{chanal}] " if chanal else ""
     msg = event.message
     grouped_ids = msg.grouped_id
-    
+    url = re.search(r"https://telegra\.ph/file/\S+\.(jpg|jpeg|png)", msg.text or "")
+    text_from_img = ""
+
     if grouped_ids:
         if grouped_ids in SEEN_ALBUMS or grouped_ids in IN_PROGRESS:
             return
@@ -250,10 +276,12 @@ async def new_msg_handler(event):
                 return
             print(f"❌ GPT 'no' for caption; go to OCR… {prefix}")
 
+        if url:
+            text_from_img = await ocr_from_image_url(url.group(0))
         ocr_targets = [
             m for m in album
             if m.photo or (m.document and m.document.mime_type.startswith("image/"))
-        ][:2]
+        ][:2]        
 
         ocr_texts = []
         for idx, m in enumerate(ocr_targets, 1):
@@ -263,20 +291,20 @@ async def new_msg_handler(event):
             print(f"OCR part {idx}: {txt[:60]}")
 
         ocr_text = "\n".join(ocr_texts)
-        if ocr_text:
-            print(f"OCR ({len(ocr_text)} symb): {ocr_text[:80]}")
+        full_ocr_text = ocr_text or text_from_img
+        
+        if full_ocr_text:
+            if fuzzy_keyword(full_ocr_text):
+                print(f"✅ fuzzy‑keyword (новинки) pass {prefix}")
+                await forward_or_send(msg)
+                add_to_seen_albums(grouped_ids)
+                return
 
-        if fuzzy_keyword(ocr_text):
-            print(f"✅ fuzzy‑keyword (новинки) pass {prefix}")
-            await forward_or_send(msg)
-            add_to_seen_albums(grouped_ids)
-            return
-
-        if ocr_text and await llm_is_relevant(ocr_text):
-            print(f"✅ GPT 'yes' from OCR {prefix}")
-            await forward_or_send(msg)
-            add_to_seen_albums(grouped_ids)
-            return
+            if await llm_is_relevant(full_ocr_text):
+                print(f"✅ GPT 'yes' from OCR or link {prefix}")
+                await forward_or_send(msg)
+                add_to_seen_albums(grouped_ids)
+                return
         
         if grouped_ids:
             SEEN_ALBUMS.add(grouped_ids)

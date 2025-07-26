@@ -5,6 +5,7 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.errors import PersistentTimestampOutdatedError
 from telethon.tl.types import UpdateShort
+from mastodon import Mastodon
 import requests, asyncio, time, tempfile, pathlib
 from functools import lru_cache
 import asyncio, os
@@ -54,6 +55,19 @@ async def llm_is_relevant(text: str) -> bool:
         print("‼️ LLM error:", e)
         return False
 
+mastodon = Mastodon(
+    access_token = config.MASTODON_ACCESS_TOKEN,
+    api_base_url = config.MASTODON_API_BASE_URL
+)
+
+def post_to_mastodon(text: str, image_path: str = None):
+    print("post_to_matodon: ", text)
+    if image_path:
+        print("image mastodon")
+        media = mastodon.media_post(image_path, mime_type="image/jpeg")
+        return mastodon.status_post(text, media_ids=[media])
+    return mastodon.status_post(text)
+
 # ----- Start Telethon and bot part
 
 async def rate_sleep(sec: float = 2.0):
@@ -68,7 +82,8 @@ def fuzzy_keyword(text: str) -> bool:
     patterns = [
         r"новинк[аи]",            
         r"новинк",
-        r"передпродаж"                
+        r"передпродаж",
+        r"анонси аудіокнижок"               
     ]
     return any(re.search(p, low) for p in patterns)
 
@@ -201,37 +216,48 @@ def send_photo_via_bot(photo_path: pathlib.Path, caption: str = ""):
 def shorten(text: str, limit: int = 1000) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
-async def forward_or_send(msg):
+async def forward_or_send(msg, chat_name: str = None):
     album_msgs = await get_album(msg)
-
+    
     if config.FORWARD_MODE:
         try:
             await client.forward_messages(config.TARGET_CHAT, album_msgs, msg.chat_id)
             await rate_sleep()
-            return
         except FloodWaitError as e:
             print(f"⏳ FloodWait {e.seconds}s, sleep...")
             await asyncio.sleep(e.seconds + 1)
             await client.forward_messages(config.TARGET_CHAT, album_msgs, msg.chat_id)
             await rate_sleep()
-            return
-
-    link = f"https://t.me/{msg.chat.username}/{msg.id}"
-    text_cap = shorten(msg.raw_text or "") + f"\n\n<a href=\"{link}\">Джерело</a>"
-    first = True
-    for m in album_msgs:
-        if m.photo:
-            with tempfile.TemporaryDirectory() as td:
-                p = pathlib.Path(td) / "img.jpg"
-                await m.download_media(file=p)
-                caption = text_cap if first else ""
-                send_photo_via_bot(p, caption=caption)
-                first = False
-                await rate_sleep()
-
-    if first:
-        send_text_via_bot(shorten(msg.raw_text or ""), link)
-        await rate_sleep()
+    else:
+        link = f"https://t.me/{msg.chat.username}/{msg.id}"
+        text_cap = shorten(msg.raw_text or "") + f"\n\n<a href=\"{link}\">Джерело</a>"
+        first = True
+        for m in album_msgs:
+            if m.photo:
+                with tempfile.TemporaryDirectory() as td:
+                    p = pathlib.Path(td) / "img.jpg"
+                    await m.download_media(file=p)
+                    caption = text_cap if first else ""
+                    send_photo_via_bot(p, caption=caption)
+                    first = False
+                    await rate_sleep()
+        if first:
+            send_text_via_bot(shorten(msg.raw_text or ""), link)
+            await rate_sleep()
+        
+    try:
+        print("I'm in Mastodon try: ", msg.raw_text)
+        tempImg = None
+        if msg.media:
+            await msg.download_media("temp.jpg") 
+            tempImg = "temp.jpg"
+        text = msg.raw_text or "📢 Новий пост "
+        if chat_name:
+            text += "від " + chat_name
+        post_to_mastodon(text, tempImg)
+        os.remove("temp.jpg")
+    except Exception as e:
+        print(f"⚠️ Mastodon post failed: {e}")
 
 async def init_channels():                
     for ch in config.CHANNELS:
@@ -245,6 +271,7 @@ async def new_msg_handler(event):
     chanal = event.chat.username or event.chat.title or "unknown"
     prefix = f"[@{chanal}] " if chanal else ""
     msg = event.message
+    chat_name = event.chat.title
     grouped_ids = msg.grouped_id
     url = re.search(r"https://telegra\.ph/file/\S+\.(jpg|jpeg|png)", msg.text or "")
     text_from_img = ""
@@ -263,7 +290,7 @@ async def new_msg_handler(event):
     try:
         if caption_text and quick_keyword_pass(caption_text):
             print(f"✅ keyword‑pass {prefix}")
-            await forward_or_send(msg)
+            await forward_or_send(msg, chat_name)
             add_to_seen_albums(grouped_ids)
             return
 
@@ -271,7 +298,7 @@ async def new_msg_handler(event):
             print(f"LLM‑caption → {prefix}{caption_text[:80]}…")
             if await llm_is_relevant(caption_text):
                 print(f"✅ GPT 'yes' for caption {prefix}")
-                await forward_or_send(msg)
+                await forward_or_send(msg, chat_name)
                 add_to_seen_albums(grouped_ids)
                 return
             print(f"❌ GPT 'no' for caption; go to OCR… {prefix}")
@@ -296,13 +323,13 @@ async def new_msg_handler(event):
         if full_ocr_text:
             if fuzzy_keyword(full_ocr_text):
                 print(f"✅ fuzzy‑keyword (новинки) pass {prefix}")
-                await forward_or_send(msg)
+                await forward_or_send(msg, chat_name)
                 add_to_seen_albums(grouped_ids)
                 return
 
             if await llm_is_relevant(full_ocr_text):
                 print(f"✅ GPT 'yes' from OCR or link {prefix}")
-                await forward_or_send(msg)
+                await forward_or_send(msg, chat_name)
                 add_to_seen_albums(grouped_ids)
                 return
         

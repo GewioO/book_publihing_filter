@@ -12,6 +12,10 @@ SESSION  = "books_monitor"
 TARGET_CHAT = "@new_book_filter"               
 BOT_TOKEN   = keys["bot_token"]
 BOT_API     = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+MASTODON_ACCESS_TOKEN= keys["mastodon_access_token"]
+MASTODON_API_BASE_URL = "https://twiukraine.com"
+
 OPENAI_API_KEY = keys["openai_api_key"]
 OPENAI_MODEL = "gpt-4o-mini"
 
@@ -19,7 +23,7 @@ BACKFILL_HOURS = 1
 RUN_BACKFILL = False 
 FORWARD_MODE = True 
 
-KEYWORDS = ("передзамов", "у друці", )
+KEYWORDS = ("передзамов", "у друці",)
 
 SYSTEM_PROMPT = (
     # --- Role ---

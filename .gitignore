@@ -4,5 +4,6 @@ keys.json
 # temp
 *.session
 *.session-journal
+/mastodon_temp
 /.easyocr
 __pycache__

@@ -5,17 +5,26 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError
 from telethon.errors import PersistentTimestampOutdatedError
 from telethon.tl.types import UpdateShort
+from telethon.tl.types import MessageEntityTextUrl
+from telethon.tl.custom.message import Message
 from mastodon import Mastodon
+from requests.exceptions import SSLError, ConnectionError
 import requests, asyncio, time, tempfile, pathlib
 from functools import lru_cache
 import asyncio, os
 import openai
 import easyocr, cv2, numpy as np
 import aiohttp
+from http.client import RemoteDisconnected
+from requests.exceptions import SSLError
 import tempfile
 from PIL import Image
 import re
 import config
+import asyncio
+import shutil
+
+
 
 reader = easyocr.Reader(['uk', 'en'], gpu=False)
 client = TelegramClient(config.SESSION, config.API_ID, config.API_HASH)
@@ -24,6 +33,18 @@ processed_grouped_ids = set()
 
 SEEN_ALBUMS: set[int] = set()
 IN_PROGRESS: set[int] = set()
+
+config.TEMP_DIR.mkdir(exist_ok=True)
+delete_timer_task = None
+
+async def delayed_cleanup(delay=60):
+    await asyncio.sleep(delay)
+    try:
+        shutil.rmtree(config.TEMP_DIR, ignore_errors=True)
+        config.TEMP_DIR.mkdir(exist_ok=True)
+        print("🧹 Temp files cleaned up.")
+    except Exception as e:
+        print(f"⚠️ Cleanup error: {e}")
 
 # ----- LLM func
 
@@ -112,6 +133,67 @@ def add_to_seen_albums(grouped_ids):
     if grouped_ids:
         IN_PROGRESS.discard(grouped_ids)
         SEEN_ALBUMS.add(grouped_ids)
+
+def reveal_hidden_links(msg) -> str:
+    if not msg.raw_text or not msg.entities:
+        return msg.raw_text
+
+    result = ""
+    last_index = 0
+
+    for entity, txt in msg.get_entities_text():
+        if isinstance(entity, MessageEntityTextUrl):
+            start = msg.raw_text.find(txt, last_index)
+            if start == -1:
+                continue  # не знайшли — пропускаємо
+            end = start + len(txt)
+            # Додаємо текст до посилання
+            result += msg.raw_text[last_index:end] + f" ({entity.url})"
+            last_index = end
+        else:
+            # Додаємо текст без змін
+            result += msg.raw_text[last_index:last_index + len(txt)]
+            last_index += len(txt)
+
+    # Додаємо все, що залишилось після останнього ентіті
+    result += msg.raw_text[last_index:]
+
+    return result
+
+def reveal_hidden_links_clean(msg) -> str:
+    print(msg)
+    markdown_text = msg.get_entities_text()
+    print("markdown: ", markdown_text)
+    # Замінюємо [текст](url) на "текст (url)"
+    def replacer(match):
+        return f"{match.group(1)} ({match.group(2)})"
+    return re.sub(r'\[([^\]]+)]\((https?://[^\)]+)\)', replacer, markdown_text)
+
+async def post_to_mastodon_with_retries(text, image_paths=None, max_retries=5, delay_seconds=10, reply_to_id=None):
+    for attempt in range(1, max_retries + 1):
+        print("Mastodon try")
+        try:
+            media_ids = []
+            if image_paths:
+                for img_path in image_paths:
+                    media = mastodon.media_post(img_path)
+                    media_ids.append(media["id"])
+
+            status = mastodon.status_post(
+                text,
+                media_ids=media_ids if media_ids else None,
+                in_reply_to_id=reply_to_id
+            )
+            return status
+
+        except (RemoteDisconnected, SSLError, ConnectionError) as e:
+            print(f"⚠️ Mastodon post attempt {attempt} failed: {e}")
+            if attempt < max_retries:
+                print(f"⏳ Retrying in {delay_seconds} seconds...")
+                await asyncio.sleep(delay_seconds)
+            else:
+                print("❌ All attempts to post to Mastodon failed.")
+                return None
 
 # ----- Start OCR part 
 
@@ -218,7 +300,11 @@ def shorten(text: str, limit: int = 1000) -> str:
 
 async def forward_or_send(msg, chat_name: str = None):
     album_msgs = await get_album(msg)
-    
+
+    # Знайти повідомлення з текстом
+    msg_with_text = next((m for m in album_msgs if m.raw_text), None)
+    caption_text = msg_with_text.raw_text if msg_with_text else "📢 Новий пост"
+
     if config.FORWARD_MODE:
         try:
             await client.forward_messages(config.TARGET_CHAT, album_msgs, msg.chat_id)
@@ -230,7 +316,7 @@ async def forward_or_send(msg, chat_name: str = None):
             await rate_sleep()
     else:
         link = f"https://t.me/{msg.chat.username}/{msg.id}"
-        text_cap = shorten(msg.raw_text or "") + f"\n\n<a href=\"{link}\">Джерело</a>"
+        text_cap = shorten(caption_text) + f"\n\n<a href=\"{link}\">Джерело</a>"
         first = True
         for m in album_msgs:
             if m.photo:
@@ -242,20 +328,62 @@ async def forward_or_send(msg, chat_name: str = None):
                     first = False
                     await rate_sleep()
         if first:
-            send_text_via_bot(shorten(msg.raw_text or ""), link)
+            send_text_via_bot(shorten(caption_text), link)
             await rate_sleep()
-        
+
+    # ==== Mastodon ====
     try:
-        print("I'm in Mastodon try: ", msg.raw_text)
-        tempImg = None
-        if msg.media:
-            await msg.download_media("temp.jpg") 
-            tempImg = "temp.jpg"
-        text = msg.raw_text or "📢 Новий пост "
+        print("I'm in Mastodon try: ", caption_text)
+
+        caption_text_with_links = reveal_hidden_links(msg_with_text) if msg_with_text else caption_text
         if chat_name:
-            text += "від " + chat_name
-        post_to_mastodon(text, tempImg)
-        os.remove("temp.jpg")
+            caption_text_with_links += f"\nВід {chat_name}\n#книги"
+
+        image_batches = []
+        current_batch = []
+
+        for i, m in enumerate(album_msgs):
+            if not m.photo:
+                continue
+
+            img_path = config.TEMP_DIR / f"img_{i}.jpg"
+            await m.download_media(file=img_path)
+            current_batch.append(str(img_path))
+
+            if len(current_batch) == config.MASTODON_MAX_IMAGES:
+                image_batches.append(current_batch)
+                current_batch = []
+
+        if current_batch:
+            image_batches.append(current_batch)
+    
+        if not image_batches:
+            await post_to_mastodon_with_retries(caption_text_with_links)
+            return
+
+        reply_to_id = None
+        total_parts = len(image_batches)
+
+        for part_index, batch in enumerate(image_batches):
+            part_text = caption_text_with_links
+            if total_parts > 1:
+                part_text += f" 📌 ({part_index + 1}/{total_parts})"
+
+            status = await post_to_mastodon_with_retries(
+                part_text,
+                image_paths=batch,
+                reply_to_id=reply_to_id
+            )
+            if not status:
+                print("❌ Lost part of the thread")
+                break
+            reply_to_id = status["id"]
+
+        global delete_timer_task
+        if delete_timer_task and not delete_timer_task.done():
+            delete_timer_task.cancel()
+        delete_timer_task = asyncio.create_task(delayed_cleanup())
+
     except Exception as e:
         print(f"⚠️ Mastodon post failed: {e}")
 

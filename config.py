@@ -1,4 +1,5 @@
 import json
+import pathlib
 
 with open("keys.json", "r", encoding="utf-8") as f:
     keys = json.load(f)
@@ -8,6 +9,8 @@ with open("channels.json", encoding="utf-8") as f:
 API_ID   = keys["api_id"]
 API_HASH = keys["api_hash"]
 SESSION  = "books_monitor"
+TEMP_DIR = pathlib.Path("mastodon_temp")
+MASTODON_MAX_IMAGES = 4
 
 TARGET_CHAT = "@new_book_filter"               
 BOT_TOKEN   = keys["bot_token"]
@@ -20,7 +23,7 @@ OPENAI_API_KEY = keys["openai_api_key"]
 OPENAI_MODEL = "gpt-4o-mini"
 
 BACKFILL_HOURS = 1
-RUN_BACKFILL = False 
+RUN_BACKFILL = False
 FORWARD_MODE = True 
 
 KEYWORDS = ("передзамов", "у друці",)

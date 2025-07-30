@@ -53,10 +53,10 @@ async def delayed_cleanup(delay=60):
 _llm_cache: dict[str, bool] = {}
 
 async def llm_is_relevant(text: str) -> bool:
-    if text in _llm_cache:          # ← return correct answer
+    if text in _llm_cache:         
         return _llm_cache[text]
 
-    client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)   # key from env
+    client = openai.AsyncOpenAI(api_key=config.OPENAI_API_KEY)
     try:
         resp = await client.chat.completions.create(
             model = config.OPENAI_MODEL,
@@ -94,7 +94,7 @@ def post_to_mastodon(text: str, image_path: str = None):
 # ----- Start Telethon and bot part
 
 async def rate_sleep(sec: float = 2.0):
-    await asyncio.sleep(sec) # pouse between messages in chat
+    await asyncio.sleep(sec)
 
 def bot_api(method: str, **params):
     return requests.post(f"{config.BOT_API}/{method}", **params, timeout=60)
@@ -147,17 +147,14 @@ def reveal_hidden_links(msg) -> str:
         if isinstance(entity, MessageEntityTextUrl):
             start = msg.raw_text.find(txt, last_index)
             if start == -1:
-                continue  # не знайшли — пропускаємо
+                continue 
             end = start + len(txt)
-            # Додаємо текст до посилання
             result += msg.raw_text[last_index:end] + f" ({entity.url})"
             last_index = end
         else:
-            # Додаємо текст без змін
             result += msg.raw_text[last_index:last_index + len(txt)]
             last_index += len(txt)
 
-    # Додаємо все, що залишилось після останнього ентіті
     result += msg.raw_text[last_index:]
 
     return result
@@ -166,7 +163,6 @@ def reveal_hidden_links_clean(msg) -> str:
     print(msg)
     markdown_text = msg.get_entities_text()
     print("markdown: ", markdown_text)
-    # Замінюємо [текст](url) на "текст (url)"
     def replacer(match):
         return f"{match.group(1)} ({match.group(2)})"
     return re.sub(r'\[([^\]]+)]\((https?://[^\)]+)\)', replacer, markdown_text)

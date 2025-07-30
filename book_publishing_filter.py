@@ -9,14 +9,16 @@ from telethon.tl.types import MessageEntityTextUrl
 from telethon.tl.custom.message import Message
 from mastodon import Mastodon
 from requests.exceptions import SSLError, ConnectionError
+from http.client import RemoteDisconnected
+import ssl
+from urllib3.exceptions import SSLError as UrllibSSLError
+from requests.exceptions import SSLError as RequestsSSLError
 import requests, asyncio, time, tempfile, pathlib
 from functools import lru_cache
 import asyncio, os
 import openai
 import easyocr, cv2, numpy as np
 import aiohttp
-from http.client import RemoteDisconnected
-from requests.exceptions import SSLError
 import tempfile
 from PIL import Image
 import re
@@ -171,13 +173,17 @@ def reveal_hidden_links_clean(msg) -> str:
 
 async def post_to_mastodon_with_retries(text, image_paths=None, max_retries=5, delay_seconds=10, reply_to_id=None):
     for attempt in range(1, max_retries + 1):
-        print("Mastodon try")
+        print(f"Mastodon try #{attempt}")
         try:
             media_ids = []
             if image_paths:
                 for img_path in image_paths:
-                    media = mastodon.media_post(img_path)
-                    media_ids.append(media["id"])
+                    try:
+                        media = mastodon.media_post(img_path)
+                        media_ids.append(media["id"])
+                    except Exception as media_error:
+                        print(f"⚠️ media_post failed on {img_path}: {media_error}")
+                        raise media_error
 
             status = mastodon.status_post(
                 text,
@@ -186,14 +192,15 @@ async def post_to_mastodon_with_retries(text, image_paths=None, max_retries=5, d
             )
             return status
 
-        except (RemoteDisconnected, SSLError, ConnectionError) as e:
+        except Exception as e:
             print(f"⚠️ Mastodon post attempt {attempt} failed: {e}")
             if attempt < max_retries:
-                print(f"⏳ Retrying in {delay_seconds} seconds...")
+                print(f"⏳ Retrying whole post in {delay_seconds} seconds...")
                 await asyncio.sleep(delay_seconds)
             else:
                 print("❌ All attempts to post to Mastodon failed.")
                 return None
+
 
 # ----- Start OCR part 
 

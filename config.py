@@ -20,7 +20,7 @@ MASTODON_ACCESS_TOKEN= keys["mastodon_access_token"]
 MASTODON_API_BASE_URL = "https://twiukraine.com"
 
 OPENAI_API_KEY = keys["openai_api_key"]
-OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL = "gpt-4o"
 
 BACKFILL_HOURS = 1
 RUN_BACKFILL = False

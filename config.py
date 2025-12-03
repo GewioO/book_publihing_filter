@@ -22,8 +22,8 @@ MASTODON_API_BASE_URL = "https://twiukraine.com"
 OPENAI_API_KEY = keys["openai_api_key"]
 OPENAI_MODEL = "gpt-4o"
 
-BACKFILL_HOURS = 1
-RUN_BACKFILL = False
+BACKFILL_HOURS = 0
+RUN_BACKFILL = True
 FORWARD_MODE = True 
 
 KEYWORDS = ("передзамов", "у друці",)

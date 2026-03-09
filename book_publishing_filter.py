@@ -6,24 +6,13 @@ from telethon.errors import FloodWaitError
 from telethon.errors import PersistentTimestampOutdatedError
 from telethon.tl.types import UpdateShort
 from telethon.tl.types import MessageEntityTextUrl
-from telethon.tl.custom.message import Message
 from mastodon import Mastodon
-from requests.exceptions import SSLError, ConnectionError
-from http.client import RemoteDisconnected
-import ssl
-from urllib3.exceptions import SSLError as UrllibSSLError
-from requests.exceptions import SSLError as RequestsSSLError
 import requests, asyncio, time, tempfile, pathlib
-from functools import lru_cache
-import asyncio, os
 import openai
 import easyocr, cv2, numpy as np
 import aiohttp
-import tempfile
-from PIL import Image
 import re
 import config
-import asyncio
 import shutil
 
 
@@ -31,10 +20,9 @@ import shutil
 reader = easyocr.Reader(['uk', 'en'], gpu=False)
 client = TelegramClient(config.SESSION, config.API_ID, config.API_HASH)
 client.add_event_handler(lambda e: None, events.Raw(types=(UpdateShort,)))
-processed_grouped_ids = set()
-
 SEEN_ALBUMS: set[int] = set()
 IN_PROGRESS: set[int] = set()
+SEEN_MSG_IDS: set[int] = set()
 
 config.TEMP_DIR.mkdir(exist_ok=True)
 delete_timer_task = None
@@ -83,14 +71,6 @@ mastodon = Mastodon(
     api_base_url = config.MASTODON_API_BASE_URL
 )
 
-def post_to_mastodon(text: str, image_path: str = None):
-    print("post_to_matodon: ", text)
-    if image_path:
-        print("image mastodon")
-        media = mastodon.media_post(image_path, mime_type="image/jpeg")
-        return mastodon.status_post(text, media_ids=[media])
-    return mastodon.status_post(text)
-
 # ----- Start Telethon and bot part
 
 async def rate_sleep(sec: float = 2.0):
@@ -106,7 +86,8 @@ def fuzzy_keyword(text: str) -> bool:
         r"новинк[аи]",            
         r"новинк",
         r"передпродаж",
-        r"анонси аудіокнижок"               
+        r"анонси аудіокнижок",
+        r"попереднє замовлення",               
     ]
     return any(re.search(p, low) for p in patterns)
 
@@ -159,14 +140,6 @@ def reveal_hidden_links(msg) -> str:
 
     return result
 
-def reveal_hidden_links_clean(msg) -> str:
-    print(msg)
-    markdown_text = msg.get_entities_text()
-    print("markdown: ", markdown_text)
-    def replacer(match):
-        return f"{match.group(1)} ({match.group(2)})"
-    return re.sub(r'\[([^\]]+)]\((https?://[^\)]+)\)', replacer, markdown_text)
-
 async def post_to_mastodon_with_retries(text, image_paths=None, max_retries=5, delay_seconds=10, reply_to_id=None):
     for attempt in range(1, max_retries + 1):
         print(f"Mastodon try #{attempt}")
@@ -181,7 +154,8 @@ async def post_to_mastodon_with_retries(text, image_paths=None, max_retries=5, d
                         print(f"⚠️ media_post failed on {img_path}: {media_error}")
                         raise media_error
 
-            status = mastodon.status_post(
+            status = await asyncio.to_thread(
+                mastodon.status_post,
                 text,
                 media_ids=media_ids if media_ids else None,
                 in_reply_to_id=reply_to_id
@@ -224,42 +198,6 @@ async def ocr_from_image_url(url: str) -> str:
     except Exception as e:
         print("❌ ocr_from_image_url error:", e)
         return ""
-
-## Special for albums
-async def ocr_first_two(msg) -> str:
-    images = []
-    if msg.photo or (msg.document and msg.document.mime_type.startswith("image/")):
-        images.append(msg)
-    if msg.grouped_id:
-        async for sib in client.iter_messages(msg.chat_id, min_id=msg.id-15, max_id=msg.id+15):
-            if sib.grouped_id == msg.grouped_id and sib.id != msg.id:
-                if sib.photo or (sib.document and sib.document.mime_type.startswith("image/")):
-                    images.append(sib)
-            if len(images) >= 2:
-                break
-    texts = [await ocr_photo_to_text(im) for im in images[:2]]
-    return "\n".join(t for t in texts if t)
-
-# ----- End OCR part
-
-async def collect_text(msg) -> str:
-    parts = [msg.raw_text or ""]
-    if msg.photo or (msg.document and msg.document.mime_type.startswith("image/")):
-        parts.append(await ocr_photo_to_text(msg))
-    if msg.grouped_id:
-        async for sibling in client.get_messages(msg.chat_id,
-                                                 ids=[m.id for m in
-                                                      await client.get_messages(msg.chat_id, limit=10,
-                                                           offset_id=msg.id,
-                                                           min_id=msg.id-15)]):
-            if sibling.grouped_id == msg.grouped_id and sibling.id != msg.id:
-                if sibling.photo or (sibling.document and sibling.document.mime_type.startswith("image/")):
-                    parts.append(await ocr_photo_to_text(sibling))
-    return "\n".join([p for p in parts if p])
-
-def extract_telegram_image_links(text):
-    pattern = r'https://telegra\.ph/file/\S+\.(?:jpg|jpeg|png|webp)'
-    return re.findall(pattern, text or "")
 
 def send_text_via_bot(text: str, link: str):
     payload = dict(chat_id=config.TARGET_CHAT,
@@ -327,11 +265,11 @@ async def forward_or_send(msg, chat_name: str = None):
                     p = pathlib.Path(td) / "img.jpg"
                     await m.download_media(file=p)
                     caption = text_cap if first else ""
-                    send_photo_via_bot(p, caption=caption)
+                    await asyncio.to_thread(send_photo_via_bot, p, caption=caption)
                     first = False
                     await rate_sleep()
         if first:
-            send_text_via_bot(shorten(caption_text), link)
+            await asyncio.to_thread(send_text_via_bot, shorten(caption_text), link)
             await rate_sleep()
 
     # ==== Mastodon ====
@@ -411,13 +349,13 @@ async def new_msg_handler(event):
         if grouped_ids in SEEN_ALBUMS or grouped_ids in IN_PROGRESS:
             return
         IN_PROGRESS.add(grouped_ids)
-    
-    album = await get_album(msg)  
+    else:
+        if msg.id in SEEN_MSG_IDS:
+            return
+        SEEN_MSG_IDS.add(msg.id)
+
+    album = await get_album(msg)
     caption_text = next((m.raw_text for m in album if m.raw_text), "") or ""
-    if msg.grouped_id:
-        if msg.grouped_id in processed_grouped_ids:
-            return  
-        processed_grouped_ids.add(msg.grouped_id)
     try:
         if caption_text and quick_keyword_pass(caption_text):
             print(f"✅ keyword‑pass {prefix}")
@@ -472,7 +410,9 @@ async def new_msg_handler(event):
     finally:
         if grouped_ids:
             IN_PROGRESS.discard(grouped_ids)
-            if len(SEEN_ALBUMS) > 50: SEEN_ALBUMS.clear()
+            if len(SEEN_ALBUMS) > 200: SEEN_ALBUMS.pop()
+        else:
+            if len(SEEN_MSG_IDS) > 200: SEEN_MSG_IDS.pop()
 
 async def backfill(hours: int = config.BACKFILL_HOURS):
     
